@@ -1,34 +1,50 @@
-# fake_news/app/main.py
-
 from fastapi import FastAPI
 from pydantic import BaseModel
+from dotenv import load_dotenv
+from pathlib import Path
+import os
 import joblib
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from groq import Groq
-import os
+import itertools
+
+# Load .env
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+# Groq keys rotation
+GROQ_KEYS = [
+    os.getenv(f"GROQ_KEY_{i}") for i in range(1, 11)
+]
+GROQ_KEYS = [k for k in GROQ_KEYS if k]
+key_cycle = itertools.cycle(GROQ_KEYS)
+
+def get_groq_client():
+    return Groq(api_key=next(key_cycle))
 
 app = FastAPI(title="Bangla Fake News Detection API")
 
 # Labels
-label2id = {'authentic': 0, 'fake': 1, 'ai_fake': 2}
 id2label = {0: 'authentic', 1: 'fake', 2: 'ai_fake'}
 
 # Load SVM
-svm_model = joblib.load('../svm_model.pkl')
+svm_model = joblib.load(str(BASE_DIR / 'svm_model.pkl'))
 
 # Load BanglaBERT
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 tokenizer = AutoTokenizer.from_pretrained("csebuetnlp/banglabert")
 bert_model = AutoModelForSequenceClassification.from_pretrained(
     "csebuetnlp/banglabert", num_labels=3)
-bert_model.load_state_dict(torch.load('../banglabert_best.pt'))
+bert_model.load_state_dict(
+    torch.load(str(BASE_DIR / 'banglabert_best.pt'),
+    map_location=device))
 bert_model = bert_model.to(device)
 bert_model.eval()
 
-# Groq client
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+print(f" Models loaded! Device: {device}")
+print(f" Groq keys loaded: {len(GROQ_KEYS)}")
 
 class NewsInput(BaseModel):
     text: str
@@ -61,34 +77,44 @@ def groq_predict(text):
 
 উত্তর:"""
 
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=10
-    )
-    result = response.choices[0].message.content.strip().lower()
-    if 'ai_fake' in result:
-        return 'ai_fake'
-    elif 'fake' in result:
-        return 'fake'
-    else:
-        return 'authentic'
+    for _ in range(len(GROQ_KEYS)):
+        try:
+            client = get_groq_client()
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10
+            )
+            result = response.choices[0].message.content.strip().lower()
+            if 'ai_fake' in result:
+                return 'ai_fake'
+            elif 'fake' in result:
+                return 'fake'
+            else:
+                return 'authentic'
+        except Exception:
+            continue
+    return bert_pred  # fallback
 
 @app.get("/")
 def home():
-    return {"message": "Bangla Fake News Detection API", "status": "running"}
+    return {
+        "message": "Bangla Fake News Detection API",
+        "status": "running",
+        "models": ["SVM", "BanglaBERT", "Llama-70B"]
+    }
 
 @app.post("/predict")
 def predict(news: NewsInput):
     text = news.text
 
-    # SVM prediction
+    # SVM
     svm_pred = svm_model.predict([text])[0]
 
-    # BanglaBERT prediction
+    # BanglaBERT
     bert_pred, bert_conf = bert_predict(text)
 
-    # Groq prediction
+    # Groq
     try:
         groq_pred = groq_predict(text)
     except:
@@ -99,13 +125,11 @@ def predict(news: NewsInput):
     final_pred = max(set(predictions), key=predictions.count)
 
     return {
-        "text": text[:100] + "...",
         "final_prediction": final_pred,
         "confidence": bert_conf,
         "all_predictions": {
             "SVM": svm_pred,
             "BanglaBERT": bert_pred,
             "Llama_70B": groq_pred
-        },
-        "best_model": "BanglaBERT"
+        }
     }
