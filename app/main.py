@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from pathlib import Path
+from huggingface_hub import hf_hub_download
 import os
 import joblib
 import torch
@@ -29,22 +30,29 @@ app = FastAPI(title="Bangla Fake News Detection API")
 # Labels
 id2label = {0: 'authentic', 1: 'fake', 2: 'ai_fake'}
 
-# Load SVM
-svm_model = joblib.load(str(BASE_DIR / 'svm_model.pkl'))
+# Load SVM from HuggingFace
+svm_path = hf_hub_download(
+    repo_id="rubayed001/bangla-fake-news-banglabert",
+    filename="svm_model.pkl"
+)
+svm_model = joblib.load(svm_path)
 
-# Load BanglaBERT
+# Load BanglaBERT from HuggingFace
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 tokenizer = AutoTokenizer.from_pretrained("csebuetnlp/banglabert")
 bert_model = AutoModelForSequenceClassification.from_pretrained(
     "csebuetnlp/banglabert", num_labels=3)
+bert_path = hf_hub_download(
+    repo_id="rubayed001/bangla-fake-news-banglabert",
+    filename="banglabert_best.pt"
+)
 bert_model.load_state_dict(
-    torch.load(str(BASE_DIR / 'banglabert_best.pt'),
-    map_location=device))
+    torch.load(bert_path, map_location=device))
 bert_model = bert_model.to(device)
 bert_model.eval()
 
-print(f" Models loaded! Device: {device}")
-print(f" Groq keys loaded: {len(GROQ_KEYS)}")
+print(f"✅ Models loaded! Device: {device}")
+print(f"✅ Groq keys loaded: {len(GROQ_KEYS)}")
 
 class NewsInput(BaseModel):
     text: str
@@ -94,7 +102,7 @@ def groq_predict(text):
                 return 'authentic'
         except Exception:
             continue
-    return bert_pred  # fallback
+    return 'authentic'  # fallback
 
 @app.get("/")
 def home():
