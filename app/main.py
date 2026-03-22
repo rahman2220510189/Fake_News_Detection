@@ -47,7 +47,8 @@ bert_path = hf_hub_download(
     filename="banglabert_best.pt"
 )
 bert_model.load_state_dict(
-    torch.load(bert_path, map_location=device))
+    torch.load(bert_path, map_location=device,
+    weights_only=False))
 bert_model = bert_model.to(device)
 bert_model.eval()
 
@@ -102,7 +103,7 @@ def groq_predict(text):
                 return 'authentic'
         except Exception:
             continue
-    return 'authentic'  # fallback
+    return 'authentic'
 
 @app.get("/")
 def home():
@@ -128,9 +129,15 @@ def predict(news: NewsInput):
     except:
         groq_pred = bert_pred
 
-    # Majority voting
+    # Majority voting - Tie হলে BanglaBERT জিতবে
     predictions = [svm_pred, bert_pred, groq_pred]
-    final_pred = max(set(predictions), key=predictions.count)
+    counts = {p: predictions.count(p) for p in predictions}
+    max_count = max(counts.values())
+
+    if list(counts.values()).count(max_count) > 1:
+        final_pred = bert_pred  # Tie → BanglaBERT
+    else:
+        final_pred = max(counts, key=counts.get)
 
     return {
         "final_prediction": final_pred,
